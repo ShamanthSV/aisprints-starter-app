@@ -1,0 +1,192 @@
+---
+title: Sprint 1 — Auth E2E & integration test PRD
+description: Phased plan for auth test environment, Playwright critical paths, and cross-cutting API/browser checks. Aligns with Vitest rules in vitest-testing.mdc; specifies minimal tooling additions where package.json has not yet wired Vitest/Playwright.
+globs:
+  - "e2e/**/*.ts"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "vitest.config.*"
+  - "playwright.config.*"
+  - ".env.test*"
+  - "package.json"
+---
+
+# Sprint 1 — Auth E2E & integration test PRD
+
+## Repository scan (baseline)
+
+| Item | Status |
+|------|--------|
+| **`.cursor/rules/vitest-testing.mdc`** | Present — **Vitest** is the declared unit/component framework; colocated `*.test.ts` / `*.test.tsx`, Testing Library, `vi.mock`, D1 mocks. |
+| **`package.json` scripts** | No `test`, `test:e2e`, or Vitest entries yet — **minimal additions required** (see Phase A). |
+| **Vitest / Playwright deps** | Not declared in root **`package.json`**; lockfile may pull **`@playwright/test`** transitively — **pin explicitly** for E2E. |
+| **Existing `*.test.*` / Playwright configs** | None found — greenfield layout below. |
+
+---
+
+## Minimal tooling additions (consistent with stack)
+
+Add to **`devDependencies`** (versions pinned per team policy):
+
+- **`vitest`**, **`@vitejs/plugin-react`** (or Vitest’s documented Next.js/React setup), **`jsdom`**, **`@testing-library/react`**, **`@testing-library/jest-dom`**, **`@testing-library/user-event`** — for unit/component tests per **`vitest-testing.mdc`**.
+- **`@playwright/test`** — for browser E2E against **`next dev`**, **`next start`**, or **`opennextjs-cloudflare preview`** as chosen target.
+
+Suggested **`package.json` scripts:**
+
+- `"test": "vitest"` — unit/component (CI: `vitest run`).
+- `"test:e2e": "playwright test"` — E2E (CI: same, headless).
+- Optional: `"test:e2e:ui": "playwright test --ui"` for local debugging.
+
+---
+
+## Phase A — Test environment & CI
+
+### Goal
+
+Stable **base URL**, documented **secrets** for local vs CI, and a **single command** to run headless E2E in CI.
+
+### Tools
+
+- **Playwright** (`@playwright/test`) for E2E.
+- **Vitest** for fast unit/API-client tests (optional for Sprint 1 if scope is E2E-only; still align **`vitest-testing.mdc`** for lib tests).
+
+### Folder layout
+
+- **`e2e/`** — Playwright specs (e.g. `e2e/auth.spec.ts`).
+- **`e2e/fixtures/`** — shared helpers: `uniqueEmail()`, `clearStorage()`, `getBaseURL()`.
+- **`playwright.config.ts`** (project root) — `baseURL` from env, trace/screenshot on failure for CI artifacts.
+
+### Fixtures
+
+- **`PLAYWRIGHT_BASE_URL`** — default `http://127.0.0.1:3000` for `next dev`; document override for **`npm run preview`** (Workers preview port from OpenNext docs).
+- **`.dev.vars`** — local Worker/Next secrets (**`AUTH_JWT_SECRET`**, D1 binding) per **`AGENTS.md`** / backend PRD; **not committed** with real secrets.
+- **`.env.test`** (optional) — committed template listing **variable names only** or dummy values; real CI secrets via **GitHub Actions secrets** / pipeline vars. Example: `PLAYWRIGHT_BASE_URL`, `E2E_API_URL` if tests call API directly.
+- **CI:** `npx playwright install --with-deps` (Linux) before `playwright test`; run **headless**; start app via **`npm run dev`** or **`npm run build && npm run start`** in background step—**document one canonical approach** so flakiness is minimized.
+
+### Data cleanup strategy
+
+- **D1 local:** Before/after suite or each file: run documented **reset** — e.g. delete `e2e` user rows by email prefix, or **reset local D1** using Wrangler (document exact command: local DB file path or `wrangler d1 execute --local` truncate script). **Do not** reset remote/production D1 from tests.
+- Prefer **unique emails** per run (`test+${timestamp}@example.com`) to reduce collisions when cleanup fails.
+
+### SQL safety (if tests seed via API)
+
+- Only through app APIs or documented admin script — no raw SQL from Playwright unless using Wrangler against **local** DB with static fixtures.
+
+### Acceptance criteria — Phase A
+
+- [ ] `playwright.config.ts` exists; `baseURL` reads from env with a documented default.
+- [ ] `npm run test:e2e` (or equivalent) runs with **zero interactive** prompts in CI.
+- [ ] README or `e2e/README.md` lists: start server command, env vars, how to reset local D1 between runs.
+- [ ] `.env.test.example` or inline comment documents **placeholder** vars; no real JWT secrets in git.
+
+---
+
+## Phase B — Critical auth paths (Playwright)
+
+### Goal
+
+Cover **happy paths** and **primary failure modes** for Sprint 1 auth (frontend + API as implemented).
+
+### Tools
+
+- **Playwright** only for these flows (full browser + `localStorage`).
+
+### Folder layout
+
+- **`e2e/auth.spec.ts`** (or split `signup.spec.ts`, `login.spec.ts` if large).
+- Reuse **`e2e/fixtures/auth.ts`** for login helpers and storage assertions.
+
+### Scenarios (normative)
+
+| # | Scenario | Expectation |
+|---|----------|-------------|
+| 1 | **Signup success** | Valid form submits; user sees success or redirect per product; **no** `password` in visible DOM after submit. |
+| 2 | **Duplicate email** | Second signup with same email shows **409-aligned** UI (error message or toast); not a silent 500. |
+| 3 | **Login success** | Valid credentials → token stored (**`quizmaker_auth_token`** per frontend PRD), redirect to authenticated home (or `/`). |
+| 4 | **Bad password** | Wrong password → clear error; **no** token written / existing token unchanged or cleared per UX. |
+| 5 | **`/me` with token** | After login, call/page that triggers **`GET /api/me`** shows user identity or **200** from API step. |
+| 6 | **`/me` without token** | **401** or redirect to login — assert via **`request` context** or UI. |
+| 7 | **Logout** | Logout clears **`localStorage`** key **`quizmaker_auth_token`**; navigates to **login or signup** per product (**if PRD says signup landing, assert that URL**; otherwise assert **`/login`**). |
+
+### Data cleanup strategy
+
+- Create users via **UI signup** or **API** (`POST /api/auth/signup`) using **unique email**; **delete** via local D1 reset or documented SQL **only on local** after suite.
+- Avoid parallel workers against **one** shared DB without isolation unless emails are globally unique per worker (`testWorkerIndex`).
+
+### Acceptance criteria — Phase B
+
+- [ ] All seven scenarios above have automated assertions (not skipped).
+- [ ] Tests do not depend on execution order unless `test.describe.serial` is explicitly justified.
+- [ ] No plaintext password logged in Playwright traces (mask in fixtures if typing debug enabled).
+
+---
+
+## Phase C — Cross-cutting checks
+
+### Goal
+
+Fail **loudly** when configuration is wrong (wrong host, API base URL, CORS), and document **local dev vs Worker preview** behavior.
+
+### Tools
+
+- Playwright **`request` fixture** for direct **`/api/*`** calls (optional dedicated **`e2e/api-health.spec.ts`**).
+- Vitest **unit** test for API client wrapper: wrong `baseURL` throws or returns structured error (if such a module exists).
+
+### Folder layout
+
+- **`e2e/config.spec.ts`** or hooks in **`playwright.config.ts`** — optional global **`/api/health`** or **`/api/me`** without auth to verify server up (skip if no health route).
+
+### Checks
+
+| Check | Method |
+|-------|--------|
+| **Wrong API base URL** | With **`API_URL=http://invalid.local`** (or mis-set **`PLAYWRIGHT_BASE_URL`**), first request fails within timeout; test **fails** with clear network error — document expected message substring. |
+| **Network error handling** | Offline or blocked host: UI shows error state (if implemented) or request fails — assert **no infinite spinner** without timeout. |
+| **CORS / host alignment** | Document: E2E hits **same origin** as Next (`baseURL` + relative `/api/...`). If frontend ever uses absolute API URL, E2E must set **`NEXT_PUBLIC_*`** to match server; **Worker preview** may use different port — **one table** in README: `next dev` vs `opennextjs-cloudflare preview` URLs. |
+| **401 handling** | Unauthenticated `fetch` to **`/api/me`** returns **401** JSON shape per backend PRD. |
+
+### Data cleanup strategy
+
+- No extra DB churn; these tests should be **read-only** or use mocks where possible.
+
+### Acceptance criteria — Phase C
+
+- [ ] At least one test asserts **misconfiguration** surfaces as a **failed** run (not a pass with undefined body).
+- [ ] README section **“E2E: local vs preview”** explains host/port and env vars.
+- [ ] Documented expectation for **CORS**: same-origin E2E default; cross-origin called out if introduced later.
+
+---
+
+## Sprint 1 completion checklist (all phases)
+
+Run before marking Sprint 1 auth **done**:
+
+### Environment & CI
+
+- [ ] `PLAYWRIGHT_BASE_URL` documented; CI installs browsers and runs **headless** E2E green.
+- [ ] Local D1 reset documented; developers can run E2E twice in a row without manual DB surgery.
+
+### Auth flows (automated)
+
+- [ ] Signup success; duplicate email error path.
+- [ ] Login success; bad password.
+- [ ] `/me` with valid Bearer token; `/me` without token (401 or equivalent).
+- [ ] Logout clears **`quizmaker_auth_token`** and lands on agreed public route (**signup or login** per product).
+
+### Cross-cutting
+
+- [ ] Wrong base URL / unreachable server causes **obvious** failure (not a false green).
+- [ ] **CORS / origin** documented for `next dev` and optional Worker **preview**; E2E config matches.
+
+### Quality bar
+
+- [ ] No placeholder tests (`expect(true).toBe(true)`) per **`vitest-testing.mdc`** for any added unit tests.
+- [ ] Passwords and JWTs not printed in CI logs.
+
+---
+
+## Out of scope (this PRD)
+
+- Load/perf testing and visual regression.
+- **Production** E2E against live Workers URL (separate release gate).
+- Email delivery / verification flows.

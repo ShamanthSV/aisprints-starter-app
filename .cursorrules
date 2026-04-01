@@ -1,0 +1,48 @@
+# QuizMaker — coding standards & AI rules
+
+Scope: **Next.js** (App Router), **Cloudflare D1** (SQLite), **Vercel AI SDK**, deployment via **Cloudflare Workers** / **@opennextjs/cloudflare**.
+
+---
+
+## Cloudflare D1 & SQLite
+
+- **Booleans:** SQLite has no native boolean type. For `INSERT`/`UPDATE`, convert JavaScript booleans to integers (`1` = true, `0` = false). When reading rows, normalize with the project `toBool()` helper so `0`/`1` and `"true"`/`"false"` (and similar) map correctly.
+- **Parameter binding:** Use **positional** placeholders (`?1`, `?2`, …) in SQL. Do **not** use PostgreSQL-style `$1`, `$2`. Normalize queries and binds through `lib/d1-client.ts` helpers (`executeQuery`, `executeQueryFirst`, `executeMutation`, etc.).
+- **Mutations:** For complex multi-step mutations with parameter binding, **do not** rely on `db.batch()`. Run each statement via individual `executeMutation` calls (e.g. in a loop) so bindings stay reliable.
+
+---
+
+## Environment variables
+
+- **Dual lookup:** Do not rely on `process.env` alone for secrets/bindings in API routes and server components. Prefer `const { env } = getCloudflareContext()` (and use `env` for D1 and Worker-exposed vars) so local dev and Cloudflare Workers stay aligned.
+- **OpenAI API key:** Resolve the key with `getOpenAIKey()` everywhere the model is used so both local (e.g. `.dev.vars`) and Worker runtimes work.
+
+---
+
+## Vercel AI SDK & structured output
+
+- Use **`generateObject`** with **`gpt-4o-mini`** for standards-aligned structured content unless a PRD specifies otherwise.
+- **Validate with Zod:** All AI outputs that represent MCQ or quiz structures must conform to `lib/mcq-generation-schema.ts` (exactly four choices, required fields). **Reject** or re-prompt on validation failure—do not persist invalid objects.
+
+---
+
+## Security & auth
+
+- **Ownership:** `PUT`/`DELETE` (and equivalent server actions) must verify resource `created_by` matches the authenticated session `userId` before mutating or deleting.
+- **Routes:** New pages must satisfy **`middleware.ts`** session and access rules; do not bypass documented matchers or auth checks.
+
+---
+
+## Documentation & PRD alignment
+
+- After completing a feature, update **Status** in the corresponding files under **`shared-memory/`** (matching `.md` and `.yaml` pairs for that feature).
+- When updating PRDs, cite implementation with **`filepath:line-number`** references.
+- Before designing new behavior, review relevant **`shared-memory/`** PRDs and **`cloudflare-env.d.ts`** so bindings, env names, and behavior match what is already implemented or planned.
+
+---
+
+## Why these rules matter
+
+- Avoids D1 binding and boolean storage bugs via integers on write, `toBool()` on read, and positional parameters.
+- Keeps production and local parity for secrets via Cloudflare context and `getOpenAIKey()`.
+- Keeps product specs accurate by updating `shared-memory/` and cross-checking generated Worker types.

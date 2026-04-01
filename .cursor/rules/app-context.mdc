@@ -1,0 +1,24 @@
+## Project: QuizMaker (AI sprint demo)
+
+**Event:** AI sprint — delivery assisted by Cursor agent.  
+**Repo:** Single monorepo for frontend and backend (Next.js App Router).
+
+**Stack (authoritative):**
+- UI: React + TypeScript, Tailwind, shadcn/ui patterns.
+- Backend: Next.js API routes / server actions on Cloudflare Workers via @opennextjs/cloudflare.
+- Data: Cloudflare D1 (SQLite); use positional SQL params (`?1`, `?2`), booleans as integers on write, normalize with project helpers on read.
+- Secrets/env: Prefer `getCloudflareContext().env` (and project helpers like `getOpenAIKey()` where applicable) — not `process.env` alone in server code.
+
+**Sprint 1 scope — authentication only**
+- **Routes/pages:** `/signup` (initial landing), `/login`, post-login **home**, `/me` (session/bootstrap), `/logout`.
+- **Signup fields:** name, email, password, confirm password (client validation + server validation).
+- **Login fields:** email, password.
+- **JWT:** Issued after successful login; **stored in `localStorage` on the client**; used for authenticated requests; logout clears storage and redirects to `/signup`.
+- **Out of scope for sprint 1:** Quiz authoring, quiz preview, student flows — document as future phases only.
+
+**Non-functional expectations**
+- Phase PRDs must be **implementable one phase at a time** with clear exit criteria.
+- Align with existing rules: `.cursor/rules/*.mdc`, root `.cursorrules`, and `AGENTS.md` / `shared-memory/` if present.
+- PRDs should name **API shapes** (request/response), **error contract** (status codes + body), and **env vars** (e.g. JWT signing secret, public app URL).
+
+**Deliverable format:** Technical PRD as `.mdc` with YAML frontmatter (title, description, globs if useful) and phased sections: goals, dependencies, tasks, acceptance criteria, risks.

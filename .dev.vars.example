@@ -1,0 +1,6 @@
+# Copy to `.dev.vars` (gitignored). Used by OpenNext local dev + Wrangler.
+# See also `.env.example` and docs/sprint-1/prd-auth-contract-env.mdc §5.
+NEXTJS_ENV=development
+
+# Required for JWT (HS256). Generate a long random string; never commit real values.
+AUTH_JWT_SECRET=Shamanth@12345678

@@ -1,0 +1,190 @@
+---
+title: Sprint 1 — Auth frontend (App Router)
+description: PRD for routing, signup/login UX, JWT in localStorage, authenticated shell, /me bootstrap, and logout. Aligns with Next.js App Router, shadcn/ui, react-hook-form + zod, and Tailwind per project rules.
+globs:
+  - "src/app/**/*.tsx"
+  - "src/components/**/*.tsx"
+  - "src/lib/**/*.ts"
+  - "middleware.ts"
+---
+
+# Sprint 1 — Auth frontend
+
+## Purpose
+
+Deliver the **unauthenticated** and **authenticated** UI shells for QuizMaker, wired to the backend auth contract (see API PRD). Forms follow **shadcn/ui** + **react-hook-form** + **Zod**; styling uses **Tailwind** utilities and `src/app/globals.css` only for global imports per project rules.
+
+---
+
+## Token handling (normative)
+
+| Concern | Decision |
+|--------|----------|
+| **localStorage key** | `quizmaker_auth_token` — stores the JWT **access** string returned by login (or equivalent bearer token field name from the API contract). |
+| **Write** | Set **only** after a **successful** `POST` login response that includes a token; optionally clear any stale value before write. |
+| **Read** | On the **client**: before calling protected APIs; on **app load** for authenticated areas to decide whether to bootstrap `/me`. **Never** read this key in Server Components or route handlers for security-sensitive authorization (use middleware + server-verified session patterns in later sprints if moving to cookies). For Sprint 1, **client-side** guards and fetch wrappers read the key. |
+| **Clear** | On **logout** (user action), on **401** from a protected call when refresh is not in scope, and before replacing with a new token on re-login if required by UX. |
+| **`Authorization` header** | For client-side `fetch` to protected routes: `Authorization: Bearer <quizmaker_auth_token value>`. Centralize in a small helper (e.g. `src/lib/auth-client.ts` or `src/lib/services/auth-fetch.ts`) so all calls attach the header consistently. Server-side `fetch` from RSC must **not** use localStorage; Sprint 1 defers server-authenticated data loading to client bootstrap where needed. |
+
+---
+
+## Phase A — Routing, layouts, unauthenticated shell; redirect skeleton
+
+### Goal
+
+Establish **App Router** structure under `src/app/`, shared **unauthenticated** layout (marketing/auth shell), and a **middleware** (or equivalent) skeleton that defines **where** auth redirects will run—without requiring full JWT validation until Phase C–D.
+
+### Tasks
+
+- Add route groups or segments for `(auth)` (login/signup) vs `(app)` or `/(dashboard)` for post-login home, per final IA.
+- Implement root `src/app/layout.tsx` composition: fonts/globals, providers if needed.
+- Add `middleware.ts` at project root (Next convention) with **matchers** documented; initial behavior: static pass-through or redirect stubs (e.g. `/login` ↔ `/` rules TBD with Phase C).
+- Unauthenticated shell: header/footer or minimal chrome using shadcn primitives.
+
+### File-level touchpoints (approximate)
+
+- `src/app/layout.tsx`
+- `src/app/(auth)/layout.tsx` (or `src/app/login/layout.tsx`, etc.)
+- `src/app/(auth)/login/page.tsx` — placeholder page
+- `src/app/(auth)/signup/page.tsx` — placeholder page
+- `middleware.ts`
+- `src/app/globals.css` — ensure Tailwind entry only; no ad-hoc global CSS for auth beyond tokens/theme
+
+### Acceptance criteria
+
+- Navigating to `/login` and `/signup` renders inside the unauthenticated shell without errors.
+- `middleware.ts` exists, exports `config.matcher`, and documents intended protected prefixes (even if logic is noop/stub).
+- No `pages/` router usage.
+
+### Backend contract dependencies
+
+- None required to ship shell; optional **health** ping endpoint name only if used for “API up” badge: e.g. `GET /api/health` (if defined in API PRD).
+
+---
+
+## Phase B — Signup page; client validation; shadcn/Tailwind UX
+
+### Goal
+
+Ship **signup** UI with **Zod** schema validation on the client, **react-hook-form** + shadcn **Form**, and polished **loading** / **inline error** states per shadcn/Tailwind rules.
+
+### Tasks
+
+- Define Zod schema (email, password policy, confirm password, any fields required by API PRD).
+- Wire `Form`, `FormField`, `Input`, `Button`, `Alert` or `FormMessage` for errors.
+- Submit handler calls signup endpoint (or server action that proxies to API—**contract** must match API PRD); disable submit while pending; show toast or inline error on failure.
+- Tailwind: spacing/typography consistent with root layout; no raw `<button>`/`<input>` for interactive elements.
+
+### File-level touchpoints (approximate)
+
+- `src/app/(auth)/signup/page.tsx`
+- `src/components/auth/signup-form.tsx` (or colocated module)
+- `src/lib/validation/signup-schema.ts` (Zod)
+- `src/lib/services/auth-service.ts` — signup/login callers using **`POST /api/auth/signup`** and **`POST /api/auth/login`** per `docs/sprint-1/prd-auth-contract-env.mdc`
+- `src/components/ui/*` — shadcn imports only
+
+### Acceptance criteria
+
+- Invalid submissions are blocked client-side with accessible error text.
+- Successful signup path documented: e.g. redirect to `/login` with success query param, or auto-login if API returns token (then follow Phase C token rules).
+- Loading state visible during submit; no double-submit.
+
+### Backend contract dependencies
+
+- **`POST /api/auth/signup`** — request/response shape and error codes per `docs/sprint-1/prd-auth-contract-env.mdc`; frontend maps known errors to field/general messages.
+
+---
+
+## Phase C — Login page; auth API; persist JWT; redirect home
+
+### Goal
+
+Implement **login** flow: form validation, call **login** API, persist **`quizmaker_auth_token`**, redirect to authenticated **home** (e.g. `/` or `/home`).
+
+### Tasks
+
+- Login form: Zod + react-hook-form + shadcn, same UX standards as signup.
+- On success: `localStorage.setItem('quizmaker_auth_token', token)`; then `redirect`/`router.replace` to home.
+- Centralize API base URL / fetch wrapper (attach `Authorization` only when token exists—login response may set token after parse).
+- Handle 401/422 with clear messaging.
+
+### File-level touchpoints (approximate)
+
+- `src/app/(auth)/login/page.tsx`
+- `src/components/auth/login-form.tsx`
+- `src/lib/validation/login-schema.ts`
+- `src/lib/services/auth-service.ts` — `login`
+- `src/lib/auth-token.ts` — thin helpers: `getToken`, `setToken`, `clearToken` wrapping `quizmaker_auth_token`
+- Optional: `src/store/*` (Zustand) for ephemeral UI auth state **if** it duplicates token—avoid duplicating source of truth; localStorage remains canonical for Sprint 1.
+
+### Acceptance criteria
+
+- After login, `quizmaker_auth_token` is present and `Authorization: Bearer` works via shared helper for subsequent client calls.
+- Failed login does not write token; user can retry.
+- Redirect lands on authenticated home route defined in Phase D.
+
+### Backend contract dependencies
+
+- **`POST /api/auth/login`** — returns JWT (or named token field) per API PRD; error body shape for invalid credentials.
+
+---
+
+## Phase D — Authenticated home shell; `/me` bootstrap; logout; guards (client vs server)
+
+### Goal
+
+Provide **authenticated** layout (nav, user menu stub), **bootstrap** current user via **`GET /api/me`** on load, **logout** clearing token and redirecting to `/login`, and **clear guard patterns** for what runs on **client** vs **server**.
+
+### Tasks
+
+- Authenticated layout under e.g. `src/app/(app)/layout.tsx` wrapping home and future app routes.
+- Client component or hook: on mount, if `getToken()` exists, `fetch('/api/me', { headers: { Authorization: Bearer … } })`; store user in Zustand or React state; handle 401 by `clearToken()` + redirect to login.
+- Logout: button clears `quizmaker_auth_token`, optional Zustand reset, `router.replace('/login')`.
+- **Guards:**
+  - **Client:** pages under authenticated group use a `useAuth` (or layout client wrapper) that gates rendering until `/me` resolves or redirects.
+  - **Server:** RSC **may** render static shell; **do not** trust localStorage in RSC. For Sprint 1, protected **content** that needs identity should load **client-side** after `/me` or via a client fetch. Document that **middleware** may later enforce cookie/session; for JWT-in-localStorage, middleware cannot read token from `localStorage`—so Phase A middleware remains **path-based stub** or optional cookie future.
+- Update `middleware.ts` if using **cookie** bridge in a later sprint; for Sprint 1, document **path-only** redirects (e.g. send logged-out users away from `/app` only if detectable—may require minimal client redirect).
+
+### File-level touchpoints (approximate)
+
+- `src/app/(app)/layout.tsx`
+- `src/app/(app)/page.tsx` — authenticated home
+- `src/components/auth/user-menu.tsx` or `auth-provider.tsx`
+- `src/hooks/use-auth-bootstrap.ts` (or similar)
+- `src/lib/services/user-service.ts` — `getMe`
+- `middleware.ts` — comments + optional path redirects
+- `src/lib/auth-token.ts` — used by bootstrap and logout
+
+### Acceptance criteria
+
+- With a valid token, home loads and displays user info from `/me` (fields per API PRD).
+- Logout removes token and prevents authenticated API calls until re-login.
+- 401 from `/me` triggers logout path.
+- README or inline comment in layout clarifies: **localStorage + client bootstrap** for Sprint 1; **server** RSC data fetching for protected resources deferred or uses public data only.
+
+### Backend contract dependencies
+
+- **`GET /api/me`** — returns current user; **`401`** when token missing/invalid.
+
+---
+
+## Explicitly out of scope (Sprint 1)
+
+- **OAuth / SSO** (Google, Microsoft, etc.).
+- **Refresh tokens**, token rotation, and silent refresh.
+- **HttpOnly cookie** sessions and **SSR**-authenticated data fetching for private resources.
+- **Password reset**, **email verification** flows, and **magic links**.
+- **Role-based UI** (admin vs teacher) beyond displaying raw fields from `/me` if returned.
+- **middleware** JWT verification using secrets (requires cookie or header from client—not available for `localStorage` tokens in standard Next middleware without custom bridging).
+- **E2E / Playwright** test suite (optional manual QA only unless separately scheduled).
+- **i18n** for auth copy.
+- **Rate limiting** and **CAPTCHA** on the frontend.
+
+---
+
+## Cross-cutting acceptance (all phases)
+
+- **Imports:** `@/components/ui/...`, `@/lib/...` per `tsconfig` paths.
+- **Forms:** shadcn Form + react-hook-form + Zod for new forms.
+- **Styling:** Tailwind `className` utilities; `tailwind.config.ts` and `src/app/globals.css` unchanged except necessary design tokens.
+- **New routes** remain compatible with future **`middleware.ts`** session rules described in **`AGENTS.md`**.

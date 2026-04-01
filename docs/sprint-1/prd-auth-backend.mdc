@@ -1,0 +1,232 @@
+---
+title: Sprint 1 — Auth backend (D1 + API routes)
+description: PRD for users table migration, password hashing, JWT issue/verify via Cloudflare env, and REST handlers for signup, login, and /me. Aligns with D1 positional binding rules, lib/d1-client.ts access, and getCloudflareContext() for secrets/bindings.
+globs:
+  - "src/app/api/**/*.ts"
+  - "lib/**/*.ts"
+  - "migrations/**/*.sql"
+  - "wrangler.jsonc"
+  - "cloudflare-env.d.ts"
+---
+
+# Sprint 1 — Auth backend
+
+## Purpose
+
+Implement **email/password** auth persisted in **Cloudflare D1**, expose **Next.js App Router** route handlers under `src/app/api/`, and issue **JWT access tokens** for the frontend PRD (`quizmaker_auth_token`). Work must use **`lib/d1-client.ts`** helpers, **positional SQL binds**, and **`const { env } = getCloudflareContext()`** for D1 and JWT secrets—**not** `process.env` alone in API routes.
+
+---
+
+## Ownership checks (future resources; Sprint 1 placeholder)
+
+| Rule | Application |
+|------|-------------|
+| **Pattern** | Mutating or deleting domain rows (quizzes, items, etc.) must verify **`created_by` (or equivalent) === authenticated `userId`**. |
+| **`userId` source** | Resolve from verified JWT **`sub`** claim (user id as stored in `users.id`). |
+| **Sprint 1** | No quiz tables; document this contract in auth utilities (e.g. `requireUser(request)` returning `{ userId }`) so later routes import one helper. |
+| **Alignment** | Matches **`.cursorrules`**: *Ownership: PUT/DELETE … must verify resource `created_by` matches the authenticated session `userId`.* |
+
+---
+
+## Phase A — D1 schema + migration (users)
+
+### Goal
+
+Create a **`users`** table with unique email, password hash, display name fields, timestamps, and appropriate indexes. Ship as a **Wrangler migration** (no manual remote applies per project rules).
+
+### Tasks
+
+- Add SQL migration (e.g. `migrations/0001_create_users.sql`) creating:
+  - **`id`** — `TEXT PRIMARY KEY` (e.g. UUID v4 string or `lower(hex(randomblob(16)))` per existing internal docs style).
+  - **`email`** — `TEXT NOT NULL UNIQUE` (normalize to lowercase in application layer before insert/lookup).
+  - **`password_hash`** — `TEXT NOT NULL` (encoding per Phase B; store full serialized hash string).
+  - **`name`** — `TEXT NOT NULL` (single column), **or** split **`first_name` / `last_name`** if matching frontend/API contract—choose one and keep migrations stable.
+  - **`created_at` / `updated_at`** — `TEXT` ISO-8601 or `INTEGER` Unix ms—**consistent** across tables; prefer one style for new schema.
+- Indexes: **unique** on `email` (often implied by `UNIQUE`); add explicit index if partial queries need it.
+- Register D1 in **`wrangler.jsonc`** (`d1_databases`) using binding name aligned with **`cloudflare-env.d.ts`** (e.g. `quizmaker_app_database` per **`AGENTS.md`** naming); run **`wrangler types`** to refresh **`Cloudflare.Env`**.
+- **Do not** apply migrations to remote DB from dev machines per **`.cursor/rules/d1.mdc`** guidance—local + workflow only as documented.
+
+### SQL safety
+
+- Migration files are **static** DDL; no user input.
+- All **runtime** DML/DDL from app code: **only** through **`executeQuery` / `executeQueryFirst` / `executeMutation`** with **positional** `?1`, `?2`, … and bound parameters—**no** string concatenation of user fields.
+
+### Security notes
+
+- Schema does not store plaintext passwords.
+- **Rate limiting:** out of scope for Sprint 1; note as follow-up for `/api/auth/*`.
+
+### Acceptance criteria
+
+- Migration applies cleanly on **local** D1 via Wrangler.
+- `users` row shape matches Phase B insert expectations.
+- D1 binding is available on **`env`** from **`getCloudflareContext()`** in API routes.
+
+---
+
+## Phase B — Password hashing; signup/login input validation
+
+### Goal
+
+Choose a **password hashing** approach compatible with **Cloudflare Workers** + **`nodejs_compat`**, and validate **`POST /api/auth/signup`** and **`POST /api/auth/login`** bodies with **Zod** (project standard for structured validation). Normative paths: **`docs/sprint-1/prd-auth-contract-env.mdc`**.
+
+### Tasks
+
+- **Hashing library (pick one documented approach):**
+  - Prefer libraries that run on **Workers** without native addons that break the edge bundle, e.g. **`@noble/hashes`** + strong KDF, **`bcryptjs`** (pure JS), or **`jose`-adjacent** crypto primitives—**verify** against **`npm run build`** / OpenNext worker bundle.
+  - Store **only** the hash string + embedded parameters (salt/params) required by the library; never log or return it.
+- **Zod schemas:** email format, password policy (min length, complexity as product requires), optional name fields; reject unknown keys if desired.
+- Implement **signup** persistence: insert user with **`executeMutation`**; on unique constraint violation, return **409** (not 500).
+- Implement **login** lookup: fetch user by email via **`executeQueryFirst`**; **constant-time** compare path: use library’s **`verify`** / **`compare`**; avoid branching on password length before hash compare in a way that leaks timing (follow library docs).
+
+### SQL safety
+
+- **INSERT:** `INSERT INTO users (…) VALUES (?1, ?2, …)` with binds for every value.
+- **SELECT:** `SELECT … FROM users WHERE email = ?1` with single bind—**no** inline email.
+
+### Security notes
+
+- **Never** log request bodies containing passwords; avoid logging email+password pairs.
+- Generic error for failed login: **“Invalid email or password”** (no user enumeration in message—optional hardening).
+- **Rate limiting:** deferred; document risk on auth endpoints.
+
+### Acceptance criteria
+
+- New user can be registered and retrieved by email; duplicate email returns **409** with stable JSON error shape.
+- Invalid credentials fail verification without throwing unhandled stack traces to clients.
+- All DB operations use **`lib/d1-client.ts`** helpers.
+
+### Backend contract dependencies
+
+- Align path names with the contract: canonical signup is **`POST /api/auth/signup`** (not **`/api/auth/register`**).
+
+---
+
+## Phase C — JWT issue and verify
+
+### Goal
+
+Issue signed JWTs on successful login (and optionally on signup if product returns a token immediately), verify on **`GET /api/me`**, using a **secret** read from **`env`** via **`getCloudflareContext()`**.
+
+### Tasks
+
+- Add secret to **`Cloudflare.Env`** (e.g. **`AUTH_JWT_SECRET`** or **`JWT_SECRET`**) — set in **`.dev.vars`** locally and **Wrangler secrets** / dashboard for production; **regenerate `cloudflare-env.d.ts`** after binding changes.
+- Use **`jose`** (or equivalent **Web Crypto**–friendly JWT library) for **sign** and **verify**.
+- **Algorithm:** **HS256** (HMAC-SHA256) unless a future PRD mandates asymmetric keys; document choice.
+- **Claims (minimum):**
+  - **`sub`** — user id (`users.id`)
+  - **`iat`** — issued at
+  - **`exp`** — expiry (absolute time)
+- **Expiry:** define TTL (e.g. **7d** or **24h**); document in this PRD and keep consistent across issue/verify.
+- **Verify helper:** `verifyAccessToken(token: string, env)` → payload or throws; used by **`/api/me`** and reusable for future protected routes.
+- **Complex mutations:** if multiple DB steps are needed with JWT + user creation, **avoid `db.batch()`** for binding-heavy flows per **`.cursorrules`**; use sequential **`executeMutation`** where applicable.
+
+### SQL safety
+
+- N/A for pure JWT; any DB read in same request still uses positional binds.
+
+### Security notes
+
+- Secret **never** sent to client; **never** logged.
+- Reject **alg=none**; validate **`exp`** on every verify.
+- **Refresh tokens / revocation lists:** out of scope (stateless JWT).
+
+### Acceptance criteria
+
+- Valid token parses and **`sub`** matches an existing user id for **`/api/me`**.
+- Expired or tampered tokens yield **401** with consistent error body.
+- Code reads signing key only from **`env`** obtained via **`getCloudflareContext()`** in API route context.
+
+---
+
+## Phase D — Route handlers: signup, login, me, logout semantics; errors
+
+### Goal
+
+Expose stable HTTP handlers with **consistent JSON** success and error shapes; document **logout** behavior for stateless JWT.
+
+### Tasks
+
+| Route | Semantics |
+|-------|-----------|
+| **`POST /api/auth/signup`** | Validate body (Zod); hash password; insert user; response **201** with safe user DTO (**no** `password_hash`); **no** `token` in body by default — client calls **`POST /api/auth/login`** unless contract is amended. |
+| **`POST /api/auth/login`** | Validate body; load user; verify password; issue JWT; **200** with **`{ token, tokenType: "Bearer", expiresIn, user }`** (field names aligned with frontend PRD). |
+| **`GET /api/me`** | **`Authorization: Bearer <jwt>`**; verify JWT; load user from **`sub`**; **200** with user DTO; **401** if missing/invalid token. |
+| **Logout** | **No server session** in Sprint 1: **logout is client-only** (frontend discards `quizmaker_auth_token`). Optional **`POST /api/auth/logout`** returns **204** with no body as a no-op **CSRF-safe** acknowledgment **or** omit route entirely—**document chosen approach** so clients do not expect server-side invalidation. |
+
+- **Error response shape (example, keep stable):**  
+  `{ "error": { "code": "STRING_CODE", "message": "Human-readable message" } }`  
+  Map: **400** validation, **401** auth, **409** conflict, **500** unexpected (minimal detail in production).
+
+### SQL safety
+
+- **`/me`:** `SELECT … FROM users WHERE id = ?1` with **`sub`** as bind.
+- No raw SQL in route files—delegate to small modules using **`d1-client`** helpers.
+
+### Security notes
+
+- Strip **`password_hash`** from all responses.
+- Do not echo stack traces in JSON responses.
+- **CORS:** follow Next/App defaults; if SPA on another origin, document CORS in a later PRD (Sprint 1 same-origin assumed unless stated).
+
+### Acceptance criteria
+
+- Postman/curl can register, login, and call **`/api/me`** with returned Bearer token.
+- Errors are JSON and **consistent** across routes.
+- Ownership helper placeholder exported or documented for future **`created_by`** checks.
+
+### Backend contract dependencies
+
+- Matches **`docs/sprint-1/prd-auth-frontend.mdc`** token key name on the client; server returns token field name agreed there (e.g. **`accessToken`** or **`token`**—pick one and document).
+
+---
+
+## Explicitly out of scope (Sprint 1)
+
+- **Quiz / MCQ tables** and any non-user domain schema.
+- **OAuth / SSO** providers.
+- **Email verification**, **password reset**, **magic links** (unless a separate repo-wide mandate appears—**not** required by scanned rules; **shared-memory** legacy docs may mention cookies—**Sprint 1** follows **JWT + localStorage** as in the frontend PRD).
+- **Refresh tokens**, token rotation, **denylists**, and **server-side session stores**.
+- **Rate limiting** and **CAPTCHA** (noted as future).
+- **RBAC** beyond **`sub`** in JWT for future ownership checks.
+
+---
+
+## Cross-cutting acceptance
+
+- **D1:** All queries through **`lib/d1-client.ts`**; positional **`?n`** binds; no **`$1`** style.
+- **Env:** **`getCloudflareContext().env`** for D1 + JWT secret + **`NEXTJS_ENV`** where relevant.
+- **Mutations:** Avoid **`db.batch()`** for complex binding-heavy flows; prefer sequential **`executeMutation`** per **`.cursorrules`**.
+- **Docs:** After implementation, update **`shared-memory/`** status for authentication per **`.cursorrules`**, and extend **`cloudflare-env.d.ts`** via **`wrangler types`** when adding bindings/secrets.
+
+---
+
+## Implementation notes (Sprint 1)
+
+### Phase A — D1 schema + migration (users)
+
+- [x] **`migrations/0001_create_users.sql`** — `users` with `id` (TEXT PK), `email` (NOT NULL UNIQUE), `password_hash`, `name`, `created_at` / `updated_at` (TEXT, ISO-8601 at insert time in app code).
+- [x] **`wrangler.jsonc`** — `d1_databases` entry: binding **`quizmaker_app_database`**, **`database_name`** `quizmaker-app-database`, **`migrations_dir`** `migrations`; **`vars.NEXTJS_ENV`** so **`wrangler types`** includes **`NEXTJS_ENV`** on **`Cloudflare.Env`** (regenerate after config changes).
+- [x] **`cloudflare-env.d.ts`** — refresh with **`npm run cf-typegen`**; confirms **`quizmaker_app_database: D1Database`** (and **`AUTH_JWT_SECRET`** remains augmented in `src/cloudflare-auth-env.d.ts`).
+- [x] **Local verification:** `npx wrangler d1 migrations apply quizmaker-app-database --local` applies **`0001_create_users.sql`**; `npx wrangler d1 execute quizmaker-app-database --local --command "PRAGMA table_info(users);"` lists the six columns above. **Do not** apply to remote DB from dev machines per **`.cursor/rules/d1.mdc`**.
+
+### Phase B — Password hashing; signup/login validation
+
+- [x] **Zod:** `src/lib/auth-contract.ts` — `signupRequestSchema` / `loginRequestSchema` with **`.strict()`**, email **trim + lowercase** transform; password min length **8** (signup).
+- [x] **Hashing:** `src/lib/auth/password.ts` — **bcryptjs** (cost 10), Workers-compatible; never log passwords.
+- [x] **Persistence:** `src/lib/auth/users-repository.ts` — **`insertUser`** via **`executeMutation`** only; duplicate email → **`409`** + `EMAIL_ALREADY_EXISTS` in `src/app/api/auth/signup/route.ts`.
+- [x] **Login verify:** `src/lib/auth/credentials.ts` — **`verifyLoginCredentials`** uses **`findUserByEmail`** (**`executeQueryFirst`**) + **`verifyPassword`** (bcrypt `compare`); generic **401** message for invalid email or password.
+
+### Phase C — JWT issue and verify
+
+- [x] **`src/lib/auth/jwt.ts`** — **`signAccessToken`** (HS256, **`sub`** / **`iat`** / **`exp`**, TTL **`ACCESS_TOKEN_EXPIRES_SEC`** = 604800); **`verifyAccessToken`** + **`verifyAccessTokenFromEnv`** (`AUTH_JWT_SECRET` from **`Cloudflare.Env`**); **jose** **`jwtVerify`** with **`clockTolerance: "60s"`**.
+- [x] **Secret:** read only via **`getWorkerEnv()`** / **`env.AUTH_JWT_SECRET`** in routes (`.dev.vars` / Wrangler secrets); never logged.
+
+### Phase D — Route handlers: signup, login, me, logout semantics; errors
+
+- [x] **`POST /api/auth/signup`** — Zod, hash, **`insertUser`**, **201** + user DTO; **409** `EMAIL_ALREADY_EXISTS`; errors per `docs/sprint-1/prd-auth-contract-env.mdc` §2.5.
+- [x] **`POST /api/auth/login`** — Zod, **`verifyLoginCredentials`**, **`signAccessToken`**, **200** with **`token`**, **`tokenType: "Bearer"`**, **`expiresIn`**, **`user`** (§2.2); **401** `INVALID_CREDENTIALS`.
+- [x] **`GET /api/me`** — **`requireUser`** (JWT **`sub`**), **`findUserById`**; **200** + user; **401** `UNAUTHORIZED`.
+- [x] **`POST /api/auth/logout`** — **204** empty body (§2.4).
+- [x] **`requireUser` / `requireUserId`** — `src/lib/auth/require-user.ts` for future **`created_by`** checks.
+- [x] **Client:** `src/lib/services/auth-service.ts` **`LoginResponse`** matches contract; **`src/app/login/page.tsx`** stores **`quizmaker_auth_token`** after login.

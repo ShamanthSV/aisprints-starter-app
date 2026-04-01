@@ -1,0 +1,255 @@
+---
+title: Sprint 1 — Auth API contract, JWT, and environment (single source of truth)
+description: Normative REST paths, JSON bodies, HTTP status mapping, JWT rules, env vars, and security stance for QuizMaker Sprint 1. Supersedes ad-hoc path alternatives in other PRDs; FE/BE/E2E docs should reference this file only.
+---
+
+# Sprint 1 — Auth API contract, JWT, and environment
+
+## Repository scan (implementation baseline)
+
+| Area | Current state |
+|------|----------------|
+| **`middleware.ts`** | Present — pass-through for `/`, `/login`, `/signup`, `/me`, `/logout`; JWT auth remains client-side (localStorage) per Sprint 1. |
+| **`next.config.ts`** | Default Next config + **`initOpenNextCloudflareForDev()`** for **`getCloudflareContext()`** in local dev ([OpenNext Cloudflare bindings](https://opennext.js.org/cloudflare/bindings)). |
+| **`open-next.config.ts`** | Default **`defineCloudflareConfig({})`** — no custom incremental cache. |
+| **`wrangler.jsonc`** | Worker entry **`.open-next/worker.js`**, **`nodejs_compat`**, **`ASSETS`** binding; D1 binding **`quizmaker_app_database`** with **`migrations/`**. |
+| **API routes** | **`src/app/api/auth/signup`**, **`login`**, **`logout`**, **`src/app/api/me`** — App Router `route.ts` per Next 15. |
+
+This document is the **single normative contract** for Sprint 1 auth. Paths below **replace** tentative alternatives (`/api/auth/register` vs `/api/auth/signup`, etc.) cited elsewhere.
+
+---
+
+## 1. Style and base paths
+
+| Decision | Value |
+|----------|--------|
+| **Style** | **REST** over JSON — no tRPC/GraphQL for Sprint 1. |
+| **Base** | Same origin as the Next app — browser calls **`/api/...`** with relative URLs. |
+| **Handler layout** | **`src/app/api/auth/<segment>/route.ts`** for `/api/auth/*`; **`src/app/api/me/route.ts`** for **`GET /api/me`** (Next App Router). |
+
+### Canonical endpoints (normative)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | **`/api/auth/signup`** | Create account (email + password + profile fields). |
+| `POST` | **`/api/auth/login`** | Issue JWT access token. |
+| `GET` | **`/api/me`** | Current user (requires Bearer token). |
+| `POST` | **`/api/auth/logout`** | Optional no-op (**204**) for clients expecting a route; **does not** invalidate JWT server-side in Sprint 1. |
+
+> **Note:** **`GET /api/me`** matches **`docs/sprint-1/prd-auth-frontend.mdc`** and **`docs/sprint-1/prd-auth-backend.mdc`**. Do **not** use `/api/auth/me` for Sprint 1 unless this file is amended.
+
+---
+
+## 2. Request / response JSON schemas
+
+### 2.1 `POST /api/auth/signup`
+
+**Request** (`application/json`):
+
+```json
+{
+  "email": "string",
+  "password": "string",
+  "name": "string"
+}
+```
+
+- **`email`:** normalized to **lowercase** on server before storage.
+- **`name`:** display name (single field for Sprint 1); split-name variants are out of scope unless this contract is revised.
+
+**Success — `201 Created`:**
+
+```json
+{
+  "user": {
+    "id": "string",
+    "email": "string",
+    "name": "string",
+    "createdAt": "string"
+  }
+}
+```
+
+- **`createdAt`:** ISO-8601 string.
+- **No** `token` in default success body; client **logs in** via **`POST /api/auth/login`** unless product later amends contract to return a token on signup.
+
+**Error** — common cases use the **standard error envelope** (§2.5).
+
+---
+
+### 2.2 `POST /api/auth/login`
+
+**Request:**
+
+```json
+{
+  "email": "string",
+  "password": "string"
+}
+```
+
+**Success — `200 OK`:**
+
+```json
+{
+  "token": "string",
+  "tokenType": "Bearer",
+  "expiresIn": 604800,
+  "user": {
+    "id": "string",
+    "email": "string",
+    "name": "string"
+  }
+}
+```
+
+- **`token`:** JWT access string; client stores under **`quizmaker_auth_token`** (see FE PRD).
+- **`expiresIn`:** seconds until **`exp`** (per §3).
+
+**Error:** standard envelope; **`401`** for invalid credentials (generic message).
+
+---
+
+### 2.3 `GET /api/me`
+
+**Request headers:**
+
+- **`Authorization: Bearer <token>`** (required).
+
+**Success — `200 OK`:**
+
+```json
+{
+  "user": {
+    "id": "string",
+    "email": "string",
+    "name": "string",
+    "createdAt": "string"
+  }
+}
+```
+
+**Error:** **`401`** if missing/invalid/expired token.
+
+---
+
+### 2.4 `POST /api/auth/logout`
+
+**Success — `204 No Content`** (empty body).
+
+**Semantics:** Acknowledgment only; **client** clears **`quizmaker_auth_token`**. Server does not maintain a session table in Sprint 1.
+
+---
+
+### 2.5 Standard error envelope (all error responses)
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human-readable message"
+  }
+}
+```
+
+- **`code`:** stable machine string (e.g. `VALIDATION_ERROR`, `INVALID_CREDENTIALS`, `EMAIL_ALREADY_EXISTS`, `UNAUTHORIZED`).
+- **`message`:** safe for UI; **no** stack traces, **no** password or hash leakage.
+
+---
+
+## 3. HTTP status mapping
+
+| Status | When |
+|--------|------|
+| **`200`** | Login success; **`GET /api/me`** success. |
+| **`201`** | Signup success. |
+| **`204`** | Logout no-op success. |
+| **`400`** | Malformed JSON, failed **Zod** validation, missing required fields. **`code`:** e.g. `VALIDATION_ERROR`. |
+| **`401`** | Wrong email/password on login; missing/invalid/expired JWT on **`/api/me`**. **`code`:** `INVALID_CREDENTIALS` or `UNAUTHORIZED` as appropriate. |
+| **`403`** | **Not used** in Sprint 1 auth (reserved for “authenticated but not allowed” on future resources). |
+| **`409`** | Signup **`email`** already registered. **`code`:** `EMAIL_ALREADY_EXISTS`. |
+| **`422`** | **Optional** — use if distinguishing **semantic** validation beyond **`400`** (e.g. password policy); if unused, fold into **`400`** and document. |
+| **`500`** | Unexpected server failure; **`message`** generic in production. |
+
+---
+
+## 4. JWT contract
+
+| Topic | Decision |
+|--------|----------|
+| **Transport** | Client sends **`Authorization: Bearer <JWT>`** on protected requests (e.g. **`GET /api/me`**). |
+| **Algorithm** | **HS256** (HMAC-SHA256) with **`AUTH_JWT_SECRET`**. |
+| **Required claims** | **`sub`** — user id (`users.id`); **`iat`** — issued-at (seconds); **`exp`** — expiry (seconds). |
+| **Lifetime** | **604800** seconds (**7 days**) unless amended; **`expiresIn`** in login response must match **`exp - iat`**. |
+| **Clock skew** | Implementations should allow **±60 seconds** when validating **`exp`** (library default or explicit **leeway** in **`jose`**). |
+| **Refresh** | **None** for Sprint 1 — single access token only; re-login after expiry. |
+| **Revocation** | **None** — no server-side denylist; logout is client-only. |
+
+---
+
+## 5. Environment variables
+
+| Name | Required | Dev | Production | Notes |
+|------|----------|-----|------------|-------|
+| **`AUTH_JWT_SECRET`** | Yes | **`.dev.vars`** (local) — never commit | **Wrangler secret** / Workers dashboard | **Never** log or expose to client. |
+| **`quizmaker_app_database`** (or chosen D1 binding name) | Yes when D1 wired | **`.dev.vars`** + **`wrangler.jsonc`** `d1_databases` | Same binding in Wrangler | Regenerate **`cloudflare-env.d.ts`** via **`npm run cf-typegen`**. |
+| **`NEXTJS_ENV`** | Optional | `.dev.vars` / vars | Wrangler vars | Already in generated **`Cloudflare.Env`** pattern. |
+
+**Never commit:** real **`AUTH_JWT_SECRET`**, production D1 credentials, or any API keys — use **`.dev.vars`** (gitignored) and **Wrangler secrets**.
+
+**Deployment notes:** This repo targets **Cloudflare Workers** via **OpenNext** (`npm run deploy`). **Vercel** is not the primary deployment path in **`AGENTS.md`**; if a Vercel preview is ever added, mirror secrets in that provider’s vault — do not duplicate into git.
+
+---
+
+## 6. Security stance (Sprint 1)
+
+| Topic | Stance |
+|--------|--------|
+| **localStorage JWT** | **XSS** can exfiltrate tokens; acceptable tradeoff for Sprint 1 **documented** here; mitigate later with **HttpOnly cookies** + CSRF strategy. |
+| **HTTPS** | Production **must** serve the app over **HTTPS** (Cloudflare default); do not rely on secure transport for JWT in local **http** dev. |
+| **Cookies / sessions** | **Future phase** — not in Sprint 1; no middleware cookie session requirement. |
+
+---
+
+## 7. Phased implementation
+
+### Phase A — Document contract + types
+
+- Freeze this file; add **`src/lib/auth-contract.ts`** (or **`shared/auth-schema.ts`**) exporting **TypeScript types** mirroring §2–4.
+- Add **`Zod`** schemas for request bodies aligned with **`POST /api/auth/signup`** and **`POST /api/auth/login`** for route handlers.
+
+### Phase B — Align FE client + BE responses
+
+- **FE:** `src/lib/services/auth-service.ts` (or equivalent) uses **exact paths** and parses **`token`**, **`user`**, **`error.code`** per §2–3.
+- **BE:** Route handlers return **status codes** and JSON bodies exactly as §2–3; **`GET /api/me`** reads **`Authorization`** per §4.
+
+### Phase C — Contract tests / shared Zod
+
+- Add **Vitest** tests (per **`.cursor/rules/vitest-testing.mdc`**) that import the **same Zod schemas** as route handlers (parse golden JSON fixtures).
+- Optional: **Playwright** `request` checks **`/api/me`** returns **`401`** without header and **`200`** with valid Bearer — aligns with **`docs/sprint-1/prd-auth-e2e.mdc`** (see **`.cursor/rules/prd-auth-e2e.mdc`** if moved).
+
+---
+
+## 8. Exit criteria (cross-PRD alignment)
+
+- [x] **`docs/sprint-1/prd-auth-frontend.mdc`** — uses **`quizmaker_auth_token`**, **`Authorization: Bearer`**, **`GET /api/me`**, **`POST /api/auth/login`** — update copy if it still says **`/api/auth/register`**; canonical signup is **`POST /api/auth/signup`**.
+- [x] **`docs/sprint-1/prd-auth-backend.mdc`** — endpoints and error envelope match §2–3; JWT secret from **`getCloudflareContext().env`**.
+- [x] **`docs/sprint-1/prd-auth-e2e.mdc`** or **`.cursor/rules/prd-auth-e2e.mdc`** — scenarios reference **`/api/auth/signup`**, **`/api/auth/login`**, **`/api/me`** and **`token`** field (optional automated E2E deferred).
+- [x] No contradictory path lists in **`shared-memory/`** PRDs for Sprint 1 — either update shared-memory or add a line: *“Sprint 1 normative: `docs/sprint-1/prd-auth-contract-env.mdc`.”*
+
+---
+
+## Canonical reference
+
+**Single source of truth path:** `docs/sprint-1/prd-auth-contract-env.mdc`
+
+---
+
+## Implementation notes (Sprint 1)
+
+- [x] **Phase A (types):** `src/lib/auth-contract.ts` — Zod **`signupRequestSchema`**, **`loginRequestSchema`**; JWT TTL **`604800`**; error codes include **`INTERNAL_ERROR`** for generic **500**s.
+- [x] **Phase B (BE):** `migrations/0001_create_users.sql`, `lib/d1-client.ts` (positional `?n`), `src/lib/auth/users-repository.ts`, `password.ts` (bcryptjs), `jwt.ts` (jose HS256, 60s leeway), `worker-env.ts` (`getCloudflareContext().env`).
+- [x] **Routes:** `src/app/api/auth/signup/route.ts`, `login/route.ts`, `logout/route.ts`, `src/app/api/me/route.ts`; **`requireUserId`** in `src/lib/auth/require-user.ts` for future **`created_by`** checks.
+- [x] **FE:** `src/lib/auth-token.ts` (`quizmaker_auth_token`), `src/lib/services/auth-service.ts`, pages **`/signup`**, **`/login`**, **`/`**, **`/me`**, **`/logout`**; shadcn-style UI under `src/components/ui/*`.
+- [x] **Env:** `.dev.vars.example`, **`.env.example`**, and **README** document **`AUTH_JWT_SECRET`**, **`NEXTJS_ENV`**, D1 binding, and **`npm run cf-typegen`**; `src/cloudflare-auth-env.d.ts` augments **`AUTH_JWT_SECRET`**; `cloudflare-env.d.ts` includes **`quizmaker_app_database`** (re-run **`npm run cf-typegen`** after Wrangler changes).
+- [ ] **Vitest contract tests** (Phase C in §7) — not added in this pass; optional follow-up.

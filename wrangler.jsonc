@@ -1,0 +1,35 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "aisprints-starter-app",
+	"main": ".open-next/worker.js",
+	"compatibility_date": "2025-03-01",
+	"compatibility_flags": [
+		"nodejs_compat",
+		"global_fetch_strictly_public"
+	],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".open-next/assets"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"NEXTJS_ENV": "development",
+		// Dev default so JWT sign/verify works without a manual `.dev.vars` copy.
+		// Override in production with `wrangler secret put AUTH_JWT_SECRET` or Dashboard secrets.
+		"AUTH_JWT_SECRET": "quizmaker-local-dev-only-replace-with-wrangler-secret-in-production"
+	},
+	"d1_databases": [
+		{
+			"binding": "quizmaker_app_database",
+			"database_name": "quizmaker-app-database",
+			"database_id": "9ab26c99-ad6b-407d-b0b2-fab894c704d9",
+			"migrations_dir": "migrations"
+		}
+	]
+}

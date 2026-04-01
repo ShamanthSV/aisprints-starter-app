@@ -1,0 +1,6 @@
+{"sessionId":"a3ce88","location":"login/route.ts:POST","message":"env after getWorkerEnv","data":{"hasDb":true,"workerSecretLen":-1,"processEnvSecretLen":-1,"resolvedSecretLen":-1,"hypothesisId":"H1-H2-H3"},"timestamp":1775029314875,"runId":"post-fix"}
+{"sessionId":"a3ce88","location":"login/route.ts:!secret","message":"branch","data":{"branch":"no_jwt_secret","hypothesisId":"H1"},"timestamp":1775029314883,"runId":"post-fix"}
+{"sessionId":"a3ce88","location":"login/route.ts:POST","message":"env after getWorkerEnv","data":{"hasDb":true,"workerSecretLen":-1,"processEnvSecretLen":-1,"resolvedSecretLen":-1,"hypothesisId":"H1-H2-H3"},"timestamp":1775029351337,"runId":"post-fix"}
+{"sessionId":"a3ce88","location":"login/route.ts:!secret","message":"branch","data":{"branch":"no_jwt_secret","hypothesisId":"H1"},"timestamp":1775029351338,"runId":"post-fix"}
+{"sessionId":"a3ce88","location":"login/route.ts:POST","message":"env after getWorkerEnv","data":{"hasDb":true,"workerSecretLen":-1,"processEnvSecretLen":-1,"resolvedSecretLen":-1,"hypothesisId":"H1-H2-H3"},"timestamp":1775029364570,"runId":"post-fix"}
+{"sessionId":"a3ce88","location":"login/route.ts:!secret","message":"branch","data":{"branch":"no_jwt_secret","hypothesisId":"H1"},"timestamp":1775029364572,"runId":"post-fix"}
